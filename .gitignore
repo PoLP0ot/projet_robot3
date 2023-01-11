@@ -1,0 +1,16 @@
+Binaries/
+Includes/
+Core/Inc/
+Core/Src/Backup
+Startup/
+Drivers/
+Debug/
+*.launch
+.cproject
+.mxproject
+.project
+.settings/com.st.stm32cube.ide.mcu.sfrview.prefs
+.settings/language.settings.xml
+.settings/stm32cubeide.project.prefs
+STM32F103RBTX_FLASH.ld
+
