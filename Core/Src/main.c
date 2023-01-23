@@ -55,11 +55,13 @@
 #define Seuil_Dist_3 490
 #define Seuil_Dist_1 755
 #define Seuil_Dist_2 979
+#define DISTANCE_50cm 5000 // 5034 Trouvé avec la formule
 #define V1 38
 #define V2 56
 #define V3 76
 #define Vmax 95
 #define T_2_S 1000 //( pwm période = 2 ms )
+#define T_50_MS 25
 #define T_200_MS 100
 #define T_2000_MS 1000
 #define CKp_D 100  //80 Robot1
@@ -74,6 +76,12 @@
 #define ANGLE90 4250
 #define ANGLEn90 850
 
+#define T_5S_AVANCE_X_50 100
+#define T_3S_TOURNER_AH_90 58
+#define T_3S_TOURNER_H_90 56
+#define T_5S_AVANCE_Z 100
+#define T_5S_AVANCE_X 100
+
 enum CMDE {
 	START,
 	STOP,
@@ -84,14 +92,14 @@ enum CMDE {
 };
 volatile enum CMDE CMDE;
 enum MODE {
-	SLEEP, ACTIF
+	SLEEP, ACTIF, MODE_PARK, MODE_ATTENTE_PARK
 };
 volatile enum MODE Mode;
 volatile unsigned char New_CMDE = 0;
 volatile uint16_t Dist_ACS_1, Dist_ACS_2, Dist_ACS_3, Dist_ACS_4;
 volatile unsigned int Time = 0;
 volatile unsigned int Tech = 0;
-uint16_t adc_buffer[8];
+uint16_t adc_buffer[10];
 uint16_t Buff_Dist[8];
 uint8_t BLUE_RX;
 
@@ -111,6 +119,31 @@ uint32_t Dist_Obst_cm;
 uint32_t Dist;
 uint8_t UNE_FOIS = 1;
 uint32_t OV = 0;
+
+int cntr = 0;
+int cntrBis = 0;
+volatile int compteur_machine_etat = 0;
+volatile int compteur_machine_etat_park = 0;
+volatile int compteur_machine_etat_attente_park = 0;
+volatile int compteur_avancer_X_50 = 0;
+volatile int compteur_tourner_AH_90 = 0;
+volatile int compteur_avancer_Z = 0;
+volatile int compteur_tourner_H_90 = 0;
+volatile int compteur_avancer_X = 0;
+int compteur_waiting = 0;
+uint32_t time_to_X0 = 0;
+uint32_t time_to_Z0 = 0;
+int reculer = 0;
+
+volatile uint16_t PositionX;
+volatile uint16_t PositionZ;
+volatile uint16_t ZIGBEE_RX[3];
+int adresse_recue = 0;
+int reception_demande_adresse = 0;
+int adresse_et_position_recue = 0;
+volatile uint16_t robot_0[3];
+volatile uint16_t robot_1[3];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -122,6 +155,7 @@ void regulateur(void);
 void controle(void);
 void Calcul_Vit(void);
 void ACS(void);
+void Move_Park(uint16_t position_to_go_x, uint16_t position_to_go_z);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -164,6 +198,11 @@ int main(void)
   MX_TIM4_Init();
   MX_USART3_UART_Init();
   MX_TIM1_Init();
+  MX_USART1_UART_Init();
+
+
+  /* Zigbee robot's adress */
+  robot_0[0] = 0x009B;
 
   /* Initialize interrupts */
   MX_NVIC_Init();
@@ -178,7 +217,10 @@ int main(void)
     	HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
     	HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
     	HAL_UART_Receive_IT(&huart3, &BLUE_RX, 1);
-    	HAL_ADC_Start_IT(&hadc1);
+    	HAL_UART_Receive_IT(&huart1, &ZIGBEE_RX, 6);
+    	//HAL_ADC_Start_IT(&hadc1);
+      	HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_2);
+    	HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10, GPIO_PIN_SET);
     	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
     	__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ANGLE0);
     	// Bloque la lecture IR
@@ -1018,6 +1060,177 @@ void regulateur(void) {
 	}
 	}
 }
+void Move_Park(uint16_t position_to_go_x, uint16_t position_to_go_z) {
+	enum ETAT {
+		REPOS,
+		Temporisation0, // On ajoute des temporisations avant/après les rotations afin de diminuer les erreurs d'angle du à l'inertie
+		Temporisation1,
+		Temporisation2,
+		Mesure_X,
+		Lancement_Sonar_X,
+		Lancement_Sonar_Z,
+		Avancer_X_50cm,
+		TemporisationX0,
+		Tourner_Droite_90,
+		Mouvement_Z,
+		Mouvement_X,
+		Tourner_Gauche_90,
+		Temporisation3,
+		Parked
+	};
+	static enum ETAT Etat = REPOS;
+	if (compteur_machine_etat >= T_50_MS) // On rentre dans la machine d'état toutes les 50 ms
+	{
+		compteur_machine_etat = 0;
+		switch (Etat) {
+			case REPOS: {
+				if (Mode == MODE_ATTENTE_PARK)
+					Etat = Temporisation0;
+				break;
+			}
+			case Temporisation0: {
+				if (cntr++ == 30) {
+					cntr = 0;
+					Etat = Avancer_X_50cm;
+				}
+				break;
+			}
+
+			case Avancer_X_50cm: {
+				if (compteur_avancer_X_50++ >= T_5S_AVANCE_X_50)
+				{
+					//compteur_avancer_X_50 = 0;
+					_CVitG = 0;
+					_CVitD = 0;
+					Etat = TemporisationX0;
+				}
+				else
+				{
+					_DirG = AVANCE;
+					_DirD = AVANCE;
+					_CVitG = V1;
+					_CVitD = V1;
+					Etat = Avancer_X_50cm;
+				}
+				break;
+			}
+
+			case TemporisationX0: {
+				if (cntr++ == 20) {
+					cntr = 0;
+					Etat = Tourner_Gauche_90;
+				}
+				break;
+			}
+
+			case Tourner_Gauche_90: {
+				if (compteur_tourner_AH_90++ >= T_3S_TOURNER_AH_90)
+				{
+					compteur_tourner_AH_90 = 0;
+					_CVitG = 0;
+					_CVitD = 0;
+					Etat = Temporisation1;
+				}
+				else
+				{
+					_DirG = RECULE;
+					_DirD = AVANCE;
+					_CVitG = V1;
+					_CVitD = V1;
+					Etat = Tourner_Gauche_90;
+				}
+				break;
+			}
+			case Temporisation1: {
+				if (cntr++ == 14) {
+					cntr = 0;
+					Etat = Mouvement_Z;
+					}
+				break;
+			}
+
+			case Mouvement_Z: {
+				HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10 , GPIO_PIN_SET);
+				if (Dist_Obst_ <= position_to_go_z - 3000)
+				{
+					_CVitG = 0;
+					_CVitD = 0;
+					Etat = Tourner_Droite_90;
+				}
+				else
+				{
+					_DirG = AVANCE;
+					_DirD = AVANCE;
+					_CVitG = V1;
+					_CVitD = V1;
+					Etat = Mouvement_Z;
+				}
+				break;
+			}
+			case Tourner_Droite_90: {
+				if (compteur_tourner_H_90++ >= T_3S_TOURNER_H_90)
+				{
+					//compteur_tourner_H_90 = 0;
+					_CVitG = 0;
+					_CVitD = 0;
+					Etat = Temporisation2;
+				}
+				else
+				{
+					_DirG = AVANCE;
+					_DirD = RECULE;
+					_CVitG = V1;
+					_CVitD = V1;
+					Etat = Tourner_Droite_90;
+				}
+				break;
+			}
+			case Temporisation2: {
+				if (cntr++ == 15)
+				{
+					cntr = 0;
+					Etat = Mouvement_X;
+				}
+				break;
+			}
+			case Mouvement_X: {
+				HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10, GPIO_PIN_SET);
+				if (Dist_Obst_ <= position_to_go_x)
+				{
+					_CVitG = 0;
+					_CVitD = 0;
+					Etat = Temporisation3;
+				}
+				else
+				{
+					_DirG = AVANCE;
+					_DirD = AVANCE;
+					_CVitG = V1;
+					_CVitD = V1;
+					Etat = Mouvement_X;
+				}
+				break;
+			}
+			case Temporisation3: {
+				if (cntr++ == 15)
+				{
+					cntr = 0;
+					Etat = Parked;
+				}
+			break;
+			}
+			case Parked: {
+				ZIGBEE_RX[0] = 0xFFFF;
+				ZIGBEE_RX[1] = 0xFFFF;
+				ZIGBEE_RX[2] = 0xFFFF;
+				HAL_UART_Transmit(&huart1, ZIGBEE_RX, 6, HAL_MAX_DELAY);
+				Mode = MODE_PARK;
+			break;
+			}
+		}
+	}
+}
+
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	if (huart->Instance == USART3) {
@@ -1051,6 +1264,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 			// disconnect bluetooth
 			break;
 		}
+
 		default:
 			New_CMDE = 1;
 		}
@@ -1061,11 +1275,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
-
-	Dist_ACS_3 = adc_buffer[0] - adc_buffer[4];
-	Dist_ACS_4 = adc_buffer[3] - adc_buffer[7];
-	Dist_ACS_1 = adc_buffer[1] - adc_buffer[5];
-	Dist_ACS_2 = adc_buffer[2] - adc_buffer[6];
+//modification des indices après avoir ajouté la surveillance batterie
+	Dist_ACS_3 = adc_buffer[0] - adc_buffer[5];
+	Dist_ACS_4 = adc_buffer[3] - adc_buffer[8];
+	Dist_ACS_1 = adc_buffer[1] - adc_buffer[6];
+	Dist_ACS_2 = adc_buffer[2] - adc_buffer[7];
 	HAL_ADC_Stop_DMA(hadc);
 }
 
@@ -1076,6 +1290,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef * htim) {
 		cpt++;
 		Time++;
 		Tech++;
+		compteur_machine_etat++;
 
 		switch (cpt) {
 		case 1: {
@@ -1086,7 +1301,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef * htim) {
 			break;
 		}
 		case 2: {
-			HAL_ADC_Start_DMA(&hadc1, (uint32_t *) adc_buffer, 8);
+			HAL_ADC_Start_DMA(&hadc1, (uint32_t *) adc_buffer, 10);
 			break;
 		}
 		case 3: {
@@ -1097,7 +1312,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef * htim) {
 			break;
 		}
 		case 4: {
-			HAL_ADC_Start_DMA(&hadc1, (uint32_t *) adc_buffer, 8);
+			HAL_ADC_Start_DMA(&hadc1, (uint32_t *) adc_buffer, 10);
 			break;
 		}
 		default:
@@ -1117,6 +1332,16 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	TOGGLE = ~TOGGLE;
 	New_CMDE = 1;
 }
+
+void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef* hadc) {
+	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+}
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
+	Dist_Obst_ = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10 , GPIO_PIN_RESET);
+}
+
 
 /* USER CODE END 4 */
 
