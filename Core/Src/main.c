@@ -88,7 +88,9 @@ enum CMDE {
 	AVANT,
 	ARRIERE,
 	DROITE,
-	GAUCHE
+	GAUCHE,
+	PARK,
+	ATTENTE_PARK
 };
 volatile enum CMDE CMDE;
 enum MODE {
@@ -155,7 +157,10 @@ void regulateur(void);
 void controle(void);
 void Calcul_Vit(void);
 void ACS(void);
+
 void Move_Park(uint16_t position_to_go_x, uint16_t position_to_go_z);
+void Park(void);
+void Attente_Park(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -199,10 +204,6 @@ int main(void)
   MX_USART3_UART_Init();
   MX_TIM1_Init();
   MX_USART1_UART_Init();
-
-
-  /* Zigbee robot's adress */
-  robot_0[0] = 0x009B;
 
   /* Initialize interrupts */
   MX_NVIC_Init();
@@ -321,6 +322,20 @@ void Gestion_Commandes(void) {
 if (New_CMDE) {
 		New_CMDE = 0;
 	switch (CMDE) {
+	case PARK: {
+		_CVitG = 0;
+		_CVitD = 0;
+		Etat = ARRET;
+		Mode = MODE_PARK;
+		break;
+			}
+	case ATTENTE_PARK: {
+		_CVitG = 0;
+		_CVitD = 0;
+		Etat = VEILLE;
+		Mode = MODE_ATTENTE_PARK;
+		break;
+	}
 		case STOP: {
 			_CVitD = _CVitG = 0;
 			// Mise en sommeil: STOP mode , réveil via IT BP1
@@ -1060,6 +1075,215 @@ void regulateur(void) {
 	}
 	}
 }
+/* Décide de park ou attente park */
+void PARKASSIST(void)
+{
+	switch (Mode)
+	{
+		case MODE_PARK:
+		{
+			Park();
+			break;
+		}
+		case MODE_ATTENTE_PARK:
+		{
+			Attente_Park();
+			break;
+		}
+		default:
+			break;
+	}
+}
+
+void Park(void) {
+	enum ETAT {
+		REPOS,
+		Ask_ADDRESS,
+		Recep_ADDRESS,
+		Pos_SONAR_X,
+		Lancement_Sonar_X, // On n'utilise que les axes X et Z
+		Mesure_Distance_X,
+		Pos_SONAR_Z,
+		Lancement_Sonar_Z,
+		Mesure_Distance_Z,
+		Send_ADDRESS,
+	};
+	static enum ETAT Etat = REPOS; //Le Robot commence à l'état de repos
+	if (compteur_machine_etat_park >= T_50_MS) // On rentre dans la machine d'état toutes les 50 ms
+	{
+		compteur_machine_etat_park = 0;
+		switch (Etat) {
+			case REPOS: {
+				if (Mode == MODE_PARK)
+					Etat = Ask_ADDRESS;
+				break;
+			}
+			case Ask_ADDRESS: { // Demande d'adresse en broadcast en ZigBee sur 0000 0000 0001 qui n'est jamais utilisé
+				ZIGBEE_RX[0] = 0xFFFF;
+				ZIGBEE_RX[1] = 0xFFFF;
+				ZIGBEE_RX[2] = 0xFFFF;
+				HAL_UART_Transmit(&huart1, ZIGBEE_RX, 6, HAL_MAX_DELAY);
+				HAL_UART_Receive_IT(&huart1, &ZIGBEE_RX, 6);
+				Etat = Recep_ADDRESS;
+				break;
+			}
+			case Recep_ADDRESS: { // Reception d'une adresse d'un robot en attente de se garer
+				if (adresse_recue == 1)
+				{
+					//adresse_recue = 0;
+					Etat = Pos_SONAR_X;
+				}
+				break;
+			}
+			case Pos_SONAR_X: { // GESTION DE L'ORIENTATION DU SONAR
+				if (cntr++ == 40) {
+					cntr = 0;
+					Etat = Lancement_Sonar_X;
+				}
+				else {
+					// On place le Sonar à 0° pour aller mesurer X
+					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ANGLE0);
+				}
+				break;
+			}
+			case Lancement_Sonar_X: { // DECLANCHEMENT D'UNE MESURE
+				HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10 , GPIO_PIN_SET);
+				Etat = Mesure_Distance_X;
+				break;
+			}
+			case Mesure_Distance_X: { // Mesure selon l'axe X
+				robot_0[1] = Dist_Obst_;
+				Etat = Pos_SONAR_Z;
+				break;
+			}
+			case Pos_SONAR_Z: { // GESTION DE L'ORIENTATION DU SONAR
+				if (cntr++ == 40) {
+					cntr = 0;
+					Etat = Lancement_Sonar_Z;
+				}
+				else {
+					// On place le Sonar à 90° pour aller mesurer Z
+					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ANGLE90);
+				}
+				break;
+			}
+			case Lancement_Sonar_Z: { // DECLANCHEMENT D'UNE MESURE
+				HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10, GPIO_PIN_SET);
+				Etat = Mesure_Distance_Z;
+				break;
+			}
+			case Mesure_Distance_Z: { // Mesure selon l'axe Z
+				robot_0[2] = Dist_Obst_;
+				Etat = Send_ADDRESS;
+				break;
+			}
+			case Send_ADDRESS: { // Envoi au robot qui a envoyé son adresse, les positions du robot garé
+				ZIGBEE_RX[0] = robot_1[0];
+				ZIGBEE_RX[1] = robot_0[1];
+				ZIGBEE_RX[2] = robot_0[2];
+				HAL_UART_Transmit(&huart1, ZIGBEE_RX, 6, HAL_MAX_DELAY);
+				__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ANGLE0);
+				Mode = SLEEP;
+				break;
+			}
+
+		}
+	}
+}
+
+void Attente_Park(void) {
+	enum ETAT {
+		REPOS,
+		ATTENTE_Ask_ADDRESS,
+		TemporisationBis,
+		Send_ADDRESS,
+		Get_ADDRESS_AND_POS,
+		TemporisationBis2,
+		DECISION,
+		MOV_PARK
+	};
+	static enum ETAT Etat = REPOS;
+	if (compteur_machine_etat_attente_park >= T_50_MS) // On rentre dans la machine d'état toutes les 50 ms
+	{
+		compteur_machine_etat_attente_park = 0;
+		switch (Etat) {
+			case REPOS: {
+				if (Mode == MODE_ATTENTE_PARK)
+					HAL_UART_Receive_IT(&huart1, &ZIGBEE_RX, 6);
+					Etat = ATTENTE_Ask_ADDRESS;
+				break;
+			}
+			case ATTENTE_Ask_ADDRESS: { // Attente de la demande d'adresse
+				if (reception_demande_adresse == 1)
+				{
+					reception_demande_adresse = 0;
+					Etat = TemporisationBis;
+				}
+				break;
+			}
+
+
+			case TemporisationBis: {
+				if (cntr++ == 150) {
+					cntr = 0;
+					Etat = Send_ADDRESS;
+				}
+				break;
+			}
+
+
+
+			case Send_ADDRESS: { // Envoi de son adresse au robot garé
+				ZIGBEE_RX[0] = robot_0[0];
+				ZIGBEE_RX[1] = 0;
+				ZIGBEE_RX[2] = 0;
+				HAL_UART_Transmit(&huart1, ZIGBEE_RX, 6, HAL_MAX_DELAY);
+				Etat = Get_ADDRESS_AND_POS;
+				break;
+			}
+
+			case Get_ADDRESS_AND_POS: {
+				HAL_UART_Receive_IT(&huart1, &ZIGBEE_RX, 6);
+				if (adresse_et_position_recue == 1) // Reception de l'adresse et position du robot garé
+				{
+					PositionX = ZIGBEE_RX[1];
+					PositionZ = ZIGBEE_RX[2];
+					adresse_et_position_recue = 0;
+					Etat = DECISION;
+				}
+				break;
+			}
+
+			/*
+			case TemporisationBis2: {
+				if (cntr++ == 50) {
+					cntr = 0;
+					Etat = DECISION;
+				}
+				break;
+			}
+			*/
+
+
+			case DECISION: {
+				if (robot_1[0] == robot_0[0])
+				{
+					Etat = MOV_PARK; // Déplacement du Robot à la position du robot garé (z+50cm)
+				}
+				else
+				{
+					Etat = ATTENTE_Ask_ADDRESS;
+				}
+				break;
+			}
+			case MOV_PARK: {
+				Move_Park(PositionX, PositionZ);
+				break;
+			}
+		}
+	}
+}
+
 void Move_Park(uint16_t position_to_go_x, uint16_t position_to_go_z) {
 	enum ETAT {
 		REPOS,
@@ -1260,6 +1484,19 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 			break;
 		}
 
+		/* On ajoute les 2 touches de l'application nécessaire au PARKASSIST */
+		case 'W': {
+			CMDE = PARK;
+			New_CMDE = 1;
+			break;
+		}
+
+		case 'X': {
+			CMDE = ATTENTE_PARK;
+			New_CMDE = 1;
+			break;
+		}
+
 		case 'D':{
 			// disconnect bluetooth
 			break;
@@ -1272,6 +1509,26 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 		HAL_UART_Receive_IT(&huart3, &BLUE_RX, 1);
 
 	}
+	/* Communication Zigbee */
+		if (huart->Instance == USART1) { //ZigBee
+			if ((ZIGBEE_RX[0] != 0) && (ZIGBEE_RX[1] == 0) && (ZIGBEE_RX[2] == 0) && (adresse_recue == 0 )) // Reception d'une adresse
+			{
+				robot_1[0] = ZIGBEE_RX[0];
+				adresse_recue = 1;
+			}
+			else if ((ZIGBEE_RX[0] == 0xFFFF) && (ZIGBEE_RX[1] == 0xFFFF) && (ZIGBEE_RX[2] == 0xFFFF)) // Reception d'une demande d'adresse
+			{
+				reception_demande_adresse = 1;
+			}
+			else if ((ZIGBEE_RX[0] == robot_0[0]) && ((ZIGBEE_RX[1] != 0) || (ZIGBEE_RX[2] != 0))) // Reception d'une commande pour se garer (adresse+position)
+			{
+				robot_1[0] = ZIGBEE_RX[0];
+				robot_1[1] = ZIGBEE_RX[1];
+				robot_1[2] = ZIGBEE_RX[2];
+				adresse_et_position_recue = 1;
+				HAL_UART_Transmit_IT(&huart1, &ZIGBEE_RX, 6);
+			}
+		}
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
