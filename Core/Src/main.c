@@ -157,7 +157,7 @@ void regulateur(void);
 void controle(void);
 void Calcul_Vit(void);
 void ACS(void);
-
+void PARKASSIST(void);
 void Move_Park(uint16_t position_to_go_x, uint16_t position_to_go_z);
 void Park(void);
 void Attente_Park(void);
@@ -219,10 +219,10 @@ int main(void)
     	HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
     	HAL_UART_Receive_IT(&huart3, &BLUE_RX, 1);
     	HAL_UART_Receive_IT(&huart1, &ZIGBEE_RX, 6);
-    	//HAL_ADC_Start_IT(&hadc1);
+    	HAL_ADC_Start_IT(&hadc1);
       	HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_2);
+      	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
     	HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10, GPIO_PIN_SET);
-    	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
     	__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ANGLE0);
     	// Bloque la lecture IR
     	// HAL_ADC_Start_IT(&hadc1);
@@ -234,6 +234,7 @@ int main(void)
   {
 	  Gestion_Commandes();
 	  controle();
+	  PARKASSIST();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -1010,6 +1011,10 @@ void regulateur(void) {
 	case ARRET: {
 		if (Mode == ACTIF)
 			Etat = ACTIF;
+		else if (Mode == MODE_ATTENTE_PARK)
+			Etat = ACTIF;
+		else if (Mode == MODE_PARK)
+			Etat = ACTIF;
 		else {
 			__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 0);
 			__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
@@ -1548,6 +1553,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef * htim) {
 		Time++;
 		Tech++;
 		compteur_machine_etat++;
+		compteur_machine_etat_park++;
+		compteur_machine_etat_attente_park++;
 
 		switch (cpt) {
 		case 1: {
