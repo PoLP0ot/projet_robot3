@@ -51,17 +51,15 @@
 #define AVANCE 	GPIO_PIN_SET
 #define RECULE  GPIO_PIN_RESET
 #define POURCENT 640
-#define Seuil_Dist_4 1001// corespond à 10 cm.
-#define Seuil_Dist_3 490
-#define Seuil_Dist_1 755
-#define Seuil_Dist_2 979
-#define DISTANCE_50cm 5000 // 5034 Trouvé avec la formule
+#define Seuil_Dist_4 1600 // Correspond à 10 cm.
+#define Seuil_Dist_3 1600
+#define Seuil_Dist_1 1600
+#define Seuil_Dist_2 1600
 #define V1 38
 #define V2 56
 #define V3 76
 #define Vmax 95
 #define T_2_S 1000 //( pwm période = 2 ms )
-#define T_50_MS 25
 #define T_200_MS 100
 #define T_2000_MS 1000
 #define CKp_D 100  //80 Robot1
@@ -72,15 +70,15 @@
 #define CKd_G 0
 #define DELTA 0x50
 
-#define ANGLE0 2410
-#define ANGLE90 4250
-#define ANGLEn90 850
-
-#define T_5S_AVANCE_X_50 100
-#define T_3S_TOURNER_AH_90 58
-#define T_3S_TOURNER_H_90 56
-#define T_5S_AVANCE_Z 100
-#define T_5S_AVANCE_X 100
+#define ANGLE_0_DEG 2600
+#define ANGLE_90_DEG 4555
+#define ANGLE_m90_DEG 900
+#define TEMPS_AVANCE1 100
+#define TEMPS_ARRET_AVANCE1 50
+#define TEMPS_TOURNE1 75
+#define TEMPS_TOURNE2 70
+#define TEMPS_ARRET_TOURNE1 50
+#define TEMPS_ARRET_TOURNE2 50
 
 enum CMDE {
 	START,
@@ -90,17 +88,29 @@ enum CMDE {
 	DROITE,
 	GAUCHE,
 	PARK,
-	ATTENTE_PARK
+	ATTENTE_PARK,
 };
 volatile enum CMDE CMDE;
 enum MODE {
 	SLEEP, ACTIF, MODE_PARK, MODE_ATTENTE_PARK
+};
+enum MESURE {
+	VIDE, FINIE
 };
 volatile enum MODE Mode;
 volatile unsigned char New_CMDE = 0;
 volatile uint16_t Dist_ACS_1, Dist_ACS_2, Dist_ACS_3, Dist_ACS_4;
 volatile unsigned int Time = 0;
 volatile unsigned int Tech = 0;
+volatile unsigned int Cpt_Parking = 0;
+volatile unsigned int Cpt_Position = 0;
+volatile unsigned int Cpt_Avance1 = 0;
+volatile unsigned int Cpt_trig1 = 0;
+volatile unsigned int Cpt_Tourne1 = 0;
+volatile unsigned int Cpt_trig2 = 0;
+volatile unsigned int Cpt_Tourne2 = 0;
+volatile unsigned int Cpt_trig3 = 0;
+
 uint16_t adc_buffer[10];
 uint16_t Buff_Dist[8];
 uint8_t BLUE_RX;
@@ -116,51 +126,28 @@ int Cmde_VitD = 0;
 int Cmde_VitG = 0;
 unsigned long Dist_parcours = 0;
 volatile uint32_t Dist_Obst;
+volatile uint32_t Dist_ACS_x, Dist_ACS_y, Dist_ACS_z;
+volatile uint32_t Dist_ACS_Ax, Dist_ACS_Ay, Dist_ACS_Az;
+volatile int X_mesuree = 0;
+volatile int Y_mesuree = 0;
+volatile int Z_mesuree = 0;
 uint32_t Dist_Obst_;
 uint32_t Dist_Obst_cm;
 uint32_t Dist;
 uint8_t UNE_FOIS = 1;
 uint32_t OV = 0;
-
-int cntr = 0;
-int cntrBis = 0;
-volatile int compteur_machine_etat = 0;
-volatile int compteur_machine_etat_park = 0;
-volatile int compteur_machine_etat_attente_park = 0;
-volatile int compteur_avancer_X_50 = 0;
-volatile int compteur_tourner_AH_90 = 0;
-volatile int compteur_avancer_Z = 0;
-volatile int compteur_tourner_H_90 = 0;
-volatile int compteur_avancer_X = 0;
-int compteur_waiting = 0;
-uint32_t time_to_X0 = 0;
-uint32_t time_to_Z0 = 0;
-int reculer = 0;
-
-volatile uint16_t PositionX;
-volatile uint16_t PositionZ;
-volatile uint16_t ZIGBEE_RX[3];
-int adresse_recue = 0;
-int reception_demande_adresse = 0;
-int adresse_et_position_recue = 0;
-volatile uint16_t robot_0[3];
-volatile uint16_t robot_1[3];
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
+void Park_Assist(void);
 void Gestion_Commandes(void);
 void regulateur(void);
 void controle(void);
 void Calcul_Vit(void);
 void ACS(void);
-void PARKASSIST(void);
-void Move_Park(uint16_t position_to_go_x, uint16_t position_to_go_z);
-void Park(void);
-void Attente_Park(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -175,7 +162,6 @@ void Attente_Park(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -203,29 +189,25 @@ int main(void)
   MX_TIM4_Init();
   MX_USART3_UART_Init();
   MX_TIM1_Init();
-  MX_USART1_UART_Init();
 
   /* Initialize interrupts */
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
+  	  	HAL_ADC_Start_IT(&hadc1);
   	  	HAL_SuspendTick(); // suppresion des Tick interrupt pour le mode sleep.
 
-    	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);  // Start PWM motor
+    	HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_2);
+  	  	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);  // Start PWM motor
     	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+    	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
     	CMDE = STOP;
     	New_CMDE = 1;
     	HAL_TIM_Base_Start_IT(&htim2);  // Start IT sur font montant PWM
     	HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
     	HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
     	HAL_UART_Receive_IT(&huart3, &BLUE_RX, 1);
-    	HAL_UART_Receive_IT(&huart1, &ZIGBEE_RX, 6);
-    	HAL_ADC_Start_IT(&hadc1);
-      	HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_2);
-      	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
-    	HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10, GPIO_PIN_SET);
-    	__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ANGLE0);
-    	// Bloque la lecture IR
-    	// HAL_ADC_Start_IT(&hadc1);
+
+    	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_SET); //Declenche la mesure sonar en continu
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -234,7 +216,8 @@ int main(void)
   {
 	  Gestion_Commandes();
 	  controle();
-	  PARKASSIST();
+	  Park_Assist();
+	  //__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4 , ANGLE_m90_DEG);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -301,6 +284,275 @@ static void MX_NVIC_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void Declenchement_Sonar(void)
+{
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_SET); //Declanche la mesure sonar en continu
+}
+
+void Park_Assist(void){
+	if (Cpt_Parking >= 25){
+		Cpt_Parking = 0;
+
+		enum ETAT {
+				REPOS,
+				POSITION,
+				TRIG_X,
+				TRIG_Y,
+				TRIG_Z,
+				MESURE,
+				AVANCE1,
+				TRIG_1,
+				TOURNE1,
+				TRIG_2,
+				AVANCE2,
+				TOURNE2,
+				TRIG_3,
+				AVANCE3,
+				FIN
+			};
+		static enum ETAT Etat = REPOS;
+
+		switch (Etat) {
+			case REPOS: {
+				if (Mode == MODE_PARK){
+					Etat = POSITION;
+				}
+
+				if (Mode == MODE_ATTENTE_PARK){
+					Etat = AVANCE1;
+				}
+
+				else{
+					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4 , ANGLE_0_DEG); // remettre le sonar en face si on est au Repos mais pas en CMDE PARK
+				}
+
+				break;
+			}
+
+			//Etats liés à PARK
+			case POSITION: {
+				Cpt_Position++; //initialisée à 0
+
+				if (X_mesuree == VIDE){
+					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4 , ANGLE_0_DEG);
+					if (Cpt_Position >= 40){
+						Cpt_Position = 0;
+						Etat = TRIG_X;
+						X_mesuree = FINIE;
+						Declenchement_Sonar();
+					}
+				}
+
+				else if (Y_mesuree == VIDE){
+					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4 , ANGLE_m90_DEG);
+					if (Cpt_Position >= 40){
+						Cpt_Position = 0;
+						Etat = TRIG_Y;
+						Y_mesuree = FINIE;
+						Declenchement_Sonar();
+					}
+				}
+
+				else if (Z_mesuree == VIDE){
+					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4 , ANGLE_90_DEG);
+					if (Cpt_Position >= 40){
+						Cpt_Position = 0;
+						Etat = TRIG_Z;
+						Z_mesuree = FINIE;
+						Declenchement_Sonar();
+					}
+				}
+
+				else{
+					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4 , ANGLE_0_DEG); // remet le sonar a  deg
+					Etat = REPOS;
+				}
+				break;
+			}
+
+			case TRIG_X: {
+				Dist_ACS_x = Dist_Obst_;
+				Etat = POSITION;
+				break;
+			}
+
+			case TRIG_Y: {
+				Dist_ACS_y = Dist_Obst_;
+				Etat = POSITION;
+				break;
+			}
+
+			case TRIG_Z: {
+				Dist_ACS_z = Dist_Obst_;
+				Etat = POSITION;
+				break;
+			}
+
+			//Etats liés à Attente Park
+			case AVANCE1: {
+				Cpt_Avance1++;
+
+				_DirG = AVANCE;
+				_DirD = AVANCE;
+				_CVitG = V1;
+				_CVitD = V1;
+				Mode = ACTIF;
+
+				if (Cpt_Avance1 >= TEMPS_AVANCE1){
+					Cpt_Avance1 = 0;
+					_DirG = AVANCE;
+					_DirD = AVANCE;
+					_CVitG = 0;
+					_CVitD = 0;
+					Etat = TRIG_1;
+
+				}
+				break;
+			}
+
+			case TRIG_1: {
+				Cpt_trig1++;
+				if (Cpt_trig1 >= TEMPS_ARRET_AVANCE1){
+					Cpt_trig1 = 0;
+					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4 , ANGLE_90_DEG);
+					Dist_ACS_Az = Dist_Obst_; // changer la variable destination
+					Etat = TOURNE1;
+				}
+
+				break;
+			}
+
+			case TOURNE1: {
+				Cpt_Tourne1++;
+
+				_DirG = RECULE; //Fait tourner le robot (copié-collé de "Gauche" depuis "Arret")
+				_DirD = AVANCE; // Tourne vers la gauche
+				_CVitG = V1;
+				_CVitD = V1;
+				Mode = ACTIF;
+
+				if(Cpt_Tourne1 >= TEMPS_TOURNE1){
+					Cpt_Tourne1 = 0;
+
+					_DirG = RECULE; //Arrete la rotation du robot (copié-collé de "droite" depuis "gauche")
+					_DirD = RECULE;
+					_CVitG = 0;
+					_CVitD = 0;
+					Etat = TRIG_2;
+
+				}
+				break;
+			}
+
+			case TRIG_2: {
+				Cpt_trig2++;
+				if (Cpt_trig2 >= TEMPS_ARRET_TOURNE2){
+					Cpt_trig2 = 0;
+					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4 , ANGLE_0_DEG);
+					Dist_ACS_Az = Dist_Obst_; // changer la variable destination (mesure sonar)
+					Etat = AVANCE2;
+				}
+				break;
+			}
+
+			case AVANCE2: {
+
+				if (Dist_ACS_z >= Dist_ACS_Az + 2000){ // Si le robot Park est à gauche, le robot en Attente Park avance
+					_DirG = AVANCE;
+					_DirD = AVANCE;
+					_CVitG = V1;
+					_CVitD = V1;
+					Dist_ACS_Az = Dist_Obst_;
+					//if (Dist_ACS_z <= Dist_ACS_Az + 5000){
+					//	_DirG = AVANCE;
+					//	_DirD = AVANCE;
+					//	_CVitG = 0;
+					//	_CVitD = 0;
+					//	Etat = TOURNE2;
+					//}
+				}
+
+				else if (Dist_ACS_z <= Dist_ACS_Az - 2000){	// Si le robot Park est à droite, le robot en Attente Park recule
+					_DirG = RECULE;
+					_DirD = RECULE;
+					_CVitG = V1;
+					_CVitD = V1;
+					Dist_ACS_Az = Dist_Obst_;
+					//if (Dist_ACS_Az >= Dist_ACS_z - 5000){
+					//	_DirG = RECULE;
+					//	_DirD = RECULE;
+					//	_CVitG = 0;
+					//	_CVitD = 0;
+					//	Etat = TOURNE2;
+					//}
+				}
+				break;
+			}
+
+			case TOURNE2:{
+				Cpt_Tourne2++;
+
+				_DirG = AVANCE; // Fait tourner le robot (copié-collé de "Gauche" depuis "Arret")
+				_DirD = RECULE; // Tourne vers la gauche
+				_CVitG = V1;
+				_CVitD = V1;
+				Mode = ACTIF;
+
+				if(Cpt_Tourne2 >= TEMPS_TOURNE2){
+					Cpt_Tourne2 = 0;
+
+					_DirG = RECULE; //Arrete la rotation du robot (copié-collé de "droite" depuis "gauche")
+					_DirD = RECULE;
+					_CVitG = 0;
+					_CVitD = 0;
+					Etat = TRIG_3;
+				}
+				break;
+			}
+
+			case TRIG_3: {
+				Cpt_trig3++;
+				if (Cpt_trig3 >= TEMPS_ARRET_TOURNE2){
+					Cpt_trig3 = 0;
+					Dist_ACS_Ax = Dist_Obst_; // changer la variable destination
+					Etat = AVANCE3;
+					}
+
+				break;
+			}
+
+
+			case AVANCE3: {
+
+				Declenchement_Sonar();
+
+				Dist_ACS_Ax = Dist_Obst_;
+
+				_DirG = AVANCE;
+				_DirD = AVANCE;
+				_CVitG = V1;
+				_CVitD = V1;
+				Mode = ACTIF;
+
+				 if (Dist_ACS_Ax <= Dist_ACS_x + 1000){
+				_DirG = AVANCE;
+				_DirD = AVANCE;
+				_CVitG = 0;
+				_CVitD = 0;
+				Etat = FIN;
+				 }
+
+				break;
+			}
+			case FIN: {
+				break;
+			}
+		}
+	}
+}
+
+
 void Gestion_Commandes(void) {
 	enum ETAT {
 		VEILLE,
@@ -316,27 +568,34 @@ void Gestion_Commandes(void) {
 		DV3,
 		GV1,
 		GV2,
-		GV3
+		GV3,
+		ETAT_ATTENTE_PARK
 	};
 	static enum ETAT Etat = VEILLE;
 
 if (New_CMDE) {
 		New_CMDE = 0;
 	switch (CMDE) {
-	case PARK: {
-		_CVitG = 0;
-		_CVitD = 0;
-		Etat = ARRET;
-		Mode = MODE_PARK;
-		break;
-			}
-	case ATTENTE_PARK: {
-		_CVitG = 0;
-		_CVitD = 0;
-		Etat = VEILLE;
-		Mode = MODE_ATTENTE_PARK;
-		break;
-	}
+
+		case PARK: {
+			_DirG = AVANCE;
+			_DirD = AVANCE;
+			_CVitG = 0;
+			_CVitD = 0;
+			Etat = ARRET;
+			Mode = MODE_PARK;
+			break;
+		}
+
+		case ATTENTE_PARK: {
+			_CVitD = _CVitG = 0;
+
+			// Mise en sommeil: STOP mode , réveil via IT BP1
+			Etat = VEILLE;
+			Mode = MODE_ATTENTE_PARK;
+			break;
+		}
+
 		case STOP: {
 			_CVitD = _CVitG = 0;
 			// Mise en sommeil: STOP mode , réveil via IT BP1
@@ -868,6 +1127,8 @@ if (New_CMDE) {
 	}
 }
 }
+
+
 void controle(void) {
 
 	if (Tech >= T_200_MS) {
@@ -1009,11 +1270,7 @@ void regulateur(void) {
 
 	switch (Etat) {
 	case ARRET: {
-		if (Mode == ACTIF)
-			Etat = ACTIF;
-		else if (Mode == MODE_ATTENTE_PARK)
-			Etat = ACTIF;
-		else if (Mode == MODE_PARK)
+		if (Mode == ACTIF || Mode == MODE_PARK || Mode == MODE_ATTENTE_PARK)
 			Etat = ACTIF;
 		else {
 			__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 0);
@@ -1080,386 +1337,6 @@ void regulateur(void) {
 	}
 	}
 }
-/* Décide de park ou attente park */
-void PARKASSIST(void)
-{
-	switch (Mode)
-	{
-		case MODE_PARK:
-		{
-			Park();
-			break;
-		}
-		case MODE_ATTENTE_PARK:
-		{
-			Attente_Park();
-			break;
-		}
-		default:
-			break;
-	}
-}
-
-void Park(void) {
-	enum ETAT {
-		REPOS,
-		Ask_ADDRESS,
-		Recep_ADDRESS,
-		Pos_SONAR_X,
-		Lancement_Sonar_X, // On n'utilise que les axes X et Z
-		Mesure_Distance_X,
-		Pos_SONAR_Z,
-		Lancement_Sonar_Z,
-		Mesure_Distance_Z,
-		Send_ADDRESS,
-	};
-	static enum ETAT Etat = REPOS; //Le Robot commence à l'état de repos
-	if (compteur_machine_etat_park >= T_50_MS) // On rentre dans la machine d'état toutes les 50 ms
-	{
-		compteur_machine_etat_park = 0;
-		switch (Etat) {
-			case REPOS: {
-				if (Mode == MODE_PARK)
-					Etat = Ask_ADDRESS;
-				break;
-			}
-			case Ask_ADDRESS: { // Demande d'adresse en broadcast en ZigBee sur 0000 0000 0001 qui n'est jamais utilisé
-				ZIGBEE_RX[0] = 0xFFFF;
-				ZIGBEE_RX[1] = 0xFFFF;
-				ZIGBEE_RX[2] = 0xFFFF;
-				HAL_UART_Transmit(&huart1, ZIGBEE_RX, 6, HAL_MAX_DELAY);
-				HAL_UART_Receive_IT(&huart1, &ZIGBEE_RX, 6);
-				Etat = Recep_ADDRESS;
-				break;
-			}
-			case Recep_ADDRESS: { // Reception d'une adresse d'un robot en attente de se garer
-				if (adresse_recue == 1)
-				{
-					//adresse_recue = 0;
-					Etat = Pos_SONAR_X;
-				}
-				break;
-			}
-			case Pos_SONAR_X: { // GESTION DE L'ORIENTATION DU SONAR
-				if (cntr++ == 40) {
-					cntr = 0;
-					Etat = Lancement_Sonar_X;
-				}
-				else {
-					// On place le Sonar à 0° pour aller mesurer X
-					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ANGLE0);
-				}
-				break;
-			}
-			case Lancement_Sonar_X: { // DECLANCHEMENT D'UNE MESURE
-				HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10 , GPIO_PIN_SET);
-				Etat = Mesure_Distance_X;
-				break;
-			}
-			case Mesure_Distance_X: { // Mesure selon l'axe X
-				robot_0[1] = Dist_Obst_;
-				Etat = Pos_SONAR_Z;
-				break;
-			}
-			case Pos_SONAR_Z: { // GESTION DE L'ORIENTATION DU SONAR
-				if (cntr++ == 40) {
-					cntr = 0;
-					Etat = Lancement_Sonar_Z;
-				}
-				else {
-					// On place le Sonar à 90° pour aller mesurer Z
-					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ANGLE90);
-				}
-				break;
-			}
-			case Lancement_Sonar_Z: { // DECLANCHEMENT D'UNE MESURE
-				HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10, GPIO_PIN_SET);
-				Etat = Mesure_Distance_Z;
-				break;
-			}
-			case Mesure_Distance_Z: { // Mesure selon l'axe Z
-				robot_0[2] = Dist_Obst_;
-				Etat = Send_ADDRESS;
-				break;
-			}
-			case Send_ADDRESS: { // Envoi au robot qui a envoyé son adresse, les positions du robot garé
-				ZIGBEE_RX[0] = robot_1[0];
-				ZIGBEE_RX[1] = robot_0[1];
-				ZIGBEE_RX[2] = robot_0[2];
-				HAL_UART_Transmit(&huart1, ZIGBEE_RX, 6, HAL_MAX_DELAY);
-				__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ANGLE0);
-				Mode = SLEEP;
-				break;
-			}
-
-		}
-	}
-}
-
-void Attente_Park(void) {
-	enum ETAT {
-		REPOS,
-		ATTENTE_Ask_ADDRESS,
-		TemporisationBis,
-		Send_ADDRESS,
-		Get_ADDRESS_AND_POS,
-		TemporisationBis2,
-		DECISION,
-		MOV_PARK
-	};
-	static enum ETAT Etat = REPOS;
-	if (compteur_machine_etat_attente_park >= T_50_MS) // On rentre dans la machine d'état toutes les 50 ms
-	{
-		compteur_machine_etat_attente_park = 0;
-		switch (Etat) {
-			case REPOS: {
-				if (Mode == MODE_ATTENTE_PARK)
-					HAL_UART_Receive_IT(&huart1, &ZIGBEE_RX, 6);
-					Etat = ATTENTE_Ask_ADDRESS;
-				break;
-			}
-			case ATTENTE_Ask_ADDRESS: { // Attente de la demande d'adresse
-				if (reception_demande_adresse == 1)
-				{
-					reception_demande_adresse = 0;
-					Etat = TemporisationBis;
-				}
-				break;
-			}
-
-
-			case TemporisationBis: {
-				if (cntr++ == 150) {
-					cntr = 0;
-					Etat = Send_ADDRESS;
-				}
-				break;
-			}
-
-
-
-			case Send_ADDRESS: { // Envoi de son adresse au robot garé
-				ZIGBEE_RX[0] = robot_0[0];
-				ZIGBEE_RX[1] = 0;
-				ZIGBEE_RX[2] = 0;
-				HAL_UART_Transmit(&huart1, ZIGBEE_RX, 6, HAL_MAX_DELAY);
-				Etat = Get_ADDRESS_AND_POS;
-				break;
-			}
-
-			case Get_ADDRESS_AND_POS: {
-				HAL_UART_Receive_IT(&huart1, &ZIGBEE_RX, 6);
-				if (adresse_et_position_recue == 1) // Reception de l'adresse et position du robot garé
-				{
-					PositionX = ZIGBEE_RX[1];
-					PositionZ = ZIGBEE_RX[2];
-					adresse_et_position_recue = 0;
-					Etat = DECISION;
-				}
-				break;
-			}
-
-			/*
-			case TemporisationBis2: {
-				if (cntr++ == 50) {
-					cntr = 0;
-					Etat = DECISION;
-				}
-				break;
-			}
-			*/
-
-
-			case DECISION: {
-				if (robot_1[0] == robot_0[0])
-				{
-					Etat = MOV_PARK; // Déplacement du Robot à la position du robot garé (z+50cm)
-				}
-				else
-				{
-					Etat = ATTENTE_Ask_ADDRESS;
-				}
-				break;
-			}
-			case MOV_PARK: {
-				Move_Park(PositionX, PositionZ);
-				break;
-			}
-		}
-	}
-}
-
-void Move_Park(uint16_t position_to_go_x, uint16_t position_to_go_z) {
-	enum ETAT {
-		REPOS,
-		Temporisation0, // On ajoute des temporisations avant/après les rotations afin de diminuer les erreurs d'angle du à l'inertie
-		Temporisation1,
-		Temporisation2,
-		Mesure_X,
-		Lancement_Sonar_X,
-		Lancement_Sonar_Z,
-		Avancer_X_50cm,
-		TemporisationX0,
-		Tourner_Droite_90,
-		Mouvement_Z,
-		Mouvement_X,
-		Tourner_Gauche_90,
-		Temporisation3,
-		Parked
-	};
-	static enum ETAT Etat = REPOS;
-	if (compteur_machine_etat >= T_50_MS) // On rentre dans la machine d'état toutes les 50 ms
-	{
-		compteur_machine_etat = 0;
-		switch (Etat) {
-			case REPOS: {
-				if (Mode == MODE_ATTENTE_PARK)
-					Etat = Temporisation0;
-				break;
-			}
-			case Temporisation0: {
-				if (cntr++ == 30) {
-					cntr = 0;
-					Etat = Avancer_X_50cm;
-				}
-				break;
-			}
-
-			case Avancer_X_50cm: {
-				if (compteur_avancer_X_50++ >= T_5S_AVANCE_X_50)
-				{
-					//compteur_avancer_X_50 = 0;
-					_CVitG = 0;
-					_CVitD = 0;
-					Etat = TemporisationX0;
-				}
-				else
-				{
-					_DirG = AVANCE;
-					_DirD = AVANCE;
-					_CVitG = V1;
-					_CVitD = V1;
-					Etat = Avancer_X_50cm;
-				}
-				break;
-			}
-
-			case TemporisationX0: {
-				if (cntr++ == 20) {
-					cntr = 0;
-					Etat = Tourner_Gauche_90;
-				}
-				break;
-			}
-
-			case Tourner_Gauche_90: {
-				if (compteur_tourner_AH_90++ >= T_3S_TOURNER_AH_90)
-				{
-					compteur_tourner_AH_90 = 0;
-					_CVitG = 0;
-					_CVitD = 0;
-					Etat = Temporisation1;
-				}
-				else
-				{
-					_DirG = RECULE;
-					_DirD = AVANCE;
-					_CVitG = V1;
-					_CVitD = V1;
-					Etat = Tourner_Gauche_90;
-				}
-				break;
-			}
-			case Temporisation1: {
-				if (cntr++ == 14) {
-					cntr = 0;
-					Etat = Mouvement_Z;
-					}
-				break;
-			}
-
-			case Mouvement_Z: {
-				HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10 , GPIO_PIN_SET);
-				if (Dist_Obst_ <= position_to_go_z - 3000)
-				{
-					_CVitG = 0;
-					_CVitD = 0;
-					Etat = Tourner_Droite_90;
-				}
-				else
-				{
-					_DirG = AVANCE;
-					_DirD = AVANCE;
-					_CVitG = V1;
-					_CVitD = V1;
-					Etat = Mouvement_Z;
-				}
-				break;
-			}
-			case Tourner_Droite_90: {
-				if (compteur_tourner_H_90++ >= T_3S_TOURNER_H_90)
-				{
-					//compteur_tourner_H_90 = 0;
-					_CVitG = 0;
-					_CVitD = 0;
-					Etat = Temporisation2;
-				}
-				else
-				{
-					_DirG = AVANCE;
-					_DirD = RECULE;
-					_CVitG = V1;
-					_CVitD = V1;
-					Etat = Tourner_Droite_90;
-				}
-				break;
-			}
-			case Temporisation2: {
-				if (cntr++ == 15)
-				{
-					cntr = 0;
-					Etat = Mouvement_X;
-				}
-				break;
-			}
-			case Mouvement_X: {
-				HAL_GPIO_WritePin(GPIOB,GPIO_PIN_10, GPIO_PIN_SET);
-				if (Dist_Obst_ <= position_to_go_x)
-				{
-					_CVitG = 0;
-					_CVitD = 0;
-					Etat = Temporisation3;
-				}
-				else
-				{
-					_DirG = AVANCE;
-					_DirD = AVANCE;
-					_CVitG = V1;
-					_CVitD = V1;
-					Etat = Mouvement_X;
-				}
-				break;
-			}
-			case Temporisation3: {
-				if (cntr++ == 15)
-				{
-					cntr = 0;
-					Etat = Parked;
-				}
-			break;
-			}
-			case Parked: {
-				ZIGBEE_RX[0] = 0xFFFF;
-				ZIGBEE_RX[1] = 0xFFFF;
-				ZIGBEE_RX[2] = 0xFFFF;
-				HAL_UART_Transmit(&huart1, ZIGBEE_RX, 6, HAL_MAX_DELAY);
-				Mode = MODE_PARK;
-			break;
-			}
-		}
-	}
-}
-
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	if (huart->Instance == USART3) {
@@ -1489,21 +1366,20 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 			break;
 		}
 
-		/* On ajoute les 2 touches de l'application nécessaire au PARKASSIST */
-		case 'W': {
+		case 'D':{
+			// disconnect bluetooth
+			break;
+		}
+
+		case 'W':{
 			CMDE = PARK;
 			New_CMDE = 1;
 			break;
 		}
 
-		case 'X': {
+		case 'X':{
 			CMDE = ATTENTE_PARK;
 			New_CMDE = 1;
-			break;
-		}
-
-		case 'D':{
-			// disconnect bluetooth
 			break;
 		}
 
@@ -1514,30 +1390,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 		HAL_UART_Receive_IT(&huart3, &BLUE_RX, 1);
 
 	}
-	/* Communication Zigbee */
-		if (huart->Instance == USART1) { //ZigBee
-			if ((ZIGBEE_RX[0] != 0) && (ZIGBEE_RX[1] == 0) && (ZIGBEE_RX[2] == 0) && (adresse_recue == 0 )) // Reception d'une adresse
-			{
-				robot_1[0] = ZIGBEE_RX[0];
-				adresse_recue = 1;
-			}
-			else if ((ZIGBEE_RX[0] == 0xFFFF) && (ZIGBEE_RX[1] == 0xFFFF) && (ZIGBEE_RX[2] == 0xFFFF)) // Reception d'une demande d'adresse
-			{
-				reception_demande_adresse = 1;
-			}
-			else if ((ZIGBEE_RX[0] == robot_0[0]) && ((ZIGBEE_RX[1] != 0) || (ZIGBEE_RX[2] != 0))) // Reception d'une commande pour se garer (adresse+position)
-			{
-				robot_1[0] = ZIGBEE_RX[0];
-				robot_1[1] = ZIGBEE_RX[1];
-				robot_1[2] = ZIGBEE_RX[2];
-				adresse_et_position_recue = 1;
-				HAL_UART_Transmit_IT(&huart1, &ZIGBEE_RX, 6);
-			}
-		}
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
-//modification des indices après avoir ajouté la surveillance batterie
+
 	Dist_ACS_3 = adc_buffer[0] - adc_buffer[5];
 	Dist_ACS_4 = adc_buffer[3] - adc_buffer[8];
 	Dist_ACS_1 = adc_buffer[1] - adc_buffer[6];
@@ -1552,9 +1408,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef * htim) {
 		cpt++;
 		Time++;
 		Tech++;
-		compteur_machine_etat++;
-		compteur_machine_etat_park++;
-		compteur_machine_etat_attente_park++;
+		Cpt_Parking++;
 
 		switch (cpt) {
 		case 1: {
@@ -1565,7 +1419,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef * htim) {
 			break;
 		}
 		case 2: {
-			HAL_ADC_Start_DMA(&hadc1, (uint32_t *) adc_buffer, 10);
+			HAL_ADC_Start_DMA(&hadc1, (uint32_t *) adc_buffer, 8);
 			break;
 		}
 		case 3: {
@@ -1576,7 +1430,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef * htim) {
 			break;
 		}
 		case 4: {
-			HAL_ADC_Start_DMA(&hadc1, (uint32_t *) adc_buffer, 10);
+			HAL_ADC_Start_DMA(&hadc1, (uint32_t *) adc_buffer, 8);
 			break;
 		}
 		default:
@@ -1597,16 +1451,26 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	New_CMDE = 1;
 }
 
-void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef* hadc) {
-	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+  /* Prevent unused argument(s) compilation warning */
+  Dist_Obst_ = HAL_TIM_ReadCapturedValue(&htim1, TIM_CHANNEL_2);
+  UNUSED(htim);
+  /* NOTE : This function should not be modified, when the callback is needed,
+            the HAL_TIM_IC_CaptureCallback could be implemented in the user file
+   */
 }
 
-void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
-	Dist_Obst_ = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10 , GPIO_PIN_RESET);
+
+void HAL_ADC_LevelOutOfWindowCallback(ADC_HandleTypeDef* hadc)
+{
+  /* Prevent unused argument(s) compilation warning */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+  UNUSED(hadc);
+  /* NOTE : This function should not be modified. When the callback is needed,
+            function HAL_ADC_LevelOutOfWindowCallback must be implemented in the user file.
+  */
 }
-
-
 /* USER CODE END 4 */
 
 /**
@@ -1633,9 +1497,7 @@ void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line number,
-     tex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+     text: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-
-/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
