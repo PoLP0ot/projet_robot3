@@ -70,13 +70,13 @@
 #define CKd_G 0
 #define DELTA 0x50
 
-#define ANGLE_0_DEG 2600
-#define ANGLE_90_DEG 4555
-#define ANGLE_m90_DEG 900
+#define ANGLE_0_DEG 2100
+#define ANGLE_90_DEG 4200
+#define ANGLE_m90_DEG 700
 #define TEMPS_AVANCE1 100
 #define TEMPS_ARRET_AVANCE1 50
-#define TEMPS_TOURNE1 75
-#define TEMPS_TOURNE2 70
+#define TEMPS_TOURNE1 66
+#define TEMPS_TOURNE2 54
 #define TEMPS_ARRET_TOURNE1 50
 #define TEMPS_ARRET_TOURNE2 50
 
@@ -110,6 +110,7 @@ volatile unsigned int Cpt_Tourne1 = 0;
 volatile unsigned int Cpt_trig2 = 0;
 volatile unsigned int Cpt_Tourne2 = 0;
 volatile unsigned int Cpt_trig3 = 0;
+volatile unsigned int Cpt_Avance2=0;
 
 uint16_t adc_buffer[10];
 uint16_t Buff_Dist[8];
@@ -436,7 +437,7 @@ void Park_Assist(void){
 					Cpt_Tourne1 = 0;
 
 					_DirG = RECULE; //Arrete la rotation du robot (copié-collé de "droite" depuis "gauche")
-					_DirD = RECULE;
+					_DirD = AVANCE;
 					_CVitG = 0;
 					_CVitD = 0;
 					Etat = TRIG_2;
@@ -457,35 +458,40 @@ void Park_Assist(void){
 			}
 
 			case AVANCE2: {
-
-				if (Dist_ACS_z >= Dist_ACS_Az + 2000){ // Si le robot Park est à gauche, le robot en Attente Park avance
+				Cpt_Avance2++;
+				if (Dist_ACS_z <= Dist_ACS_Az){
+					if (Cpt_Avance2 < fabs(Dist_ACS_Az-Dist_ACS_z)*20){// Si le robot Park est à gauche, le robot en Attente Park avance
 					_DirG = AVANCE;
 					_DirD = AVANCE;
 					_CVitG = V1;
 					_CVitD = V1;
 					Dist_ACS_Az = Dist_Obst_;
-					//if (Dist_ACS_z <= Dist_ACS_Az + 5000){
-					//	_DirG = AVANCE;
-					//	_DirD = AVANCE;
-					//	_CVitG = 0;
-					//	_CVitD = 0;
-					//	Etat = TOURNE2;
-					//}
+					}
+					else{
+						_CVitG = 0;
+						_CVitD = 0;
+						_DirG = AVANCE;
+						_DirD = AVANCE;
+						Etat = TOURNE2;
+					}
 				}
 
-				else if (Dist_ACS_z <= Dist_ACS_Az - 2000){	// Si le robot Park est à droite, le robot en Attente Park recule
+				else if (Dist_ACS_z >= Dist_ACS_Az ){
+					if (Cpt_Avance2 < fabs(Dist_ACS_Az-Dist_ACS_z)*20){// Si le robot Park est à droite, le robot en Attente Park recule
 					_DirG = RECULE;
 					_DirD = RECULE;
 					_CVitG = V1;
 					_CVitD = V1;
 					Dist_ACS_Az = Dist_Obst_;
-					//if (Dist_ACS_Az >= Dist_ACS_z - 5000){
-					//	_DirG = RECULE;
-					//	_DirD = RECULE;
-					//	_CVitG = 0;
-					//	_CVitD = 0;
-					//	Etat = TOURNE2;
-					//}
+				}
+					else{
+						_CVitG = 0;
+						_CVitD = 0;
+						_DirG = RECULE;
+						_DirD = RECULE;
+						Etat = TOURNE2;
+					}
+
 				}
 				break;
 			}
@@ -502,7 +508,7 @@ void Park_Assist(void){
 				if(Cpt_Tourne2 >= TEMPS_TOURNE2){
 					Cpt_Tourne2 = 0;
 
-					_DirG = RECULE; //Arrete la rotation du robot (copié-collé de "droite" depuis "gauche")
+					_DirG = AVANCE; //Arrete la rotation du robot (copié-collé de "droite" depuis "gauche")
 					_DirD = RECULE;
 					_CVitG = 0;
 					_CVitD = 0;
